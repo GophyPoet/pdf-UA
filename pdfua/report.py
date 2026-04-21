@@ -97,10 +97,13 @@ def write_text(report: PipelineReport, path: Path) -> None:
             lines.append(f" • {k}: {v}")
         for s in r.spreadsheet.get("sheets", []):
             lines.append(
-                f"   ○ Лист '{s['name']}': rows={s['rows']} cols={s['cols']}, "
-                f"merged={s['merged_regions']}, filled={s['cells_filled']}, "
-                f"empty_rows_skipped={s['empty_rows_skipped']}, "
-                f"empty_cols_skipped={s['empty_cols_skipped']}"
+                f"   ○ Лист '{s['name']}': rows={s.get('rows',0)} cols={s.get('cols',0)}, "
+                f"header_filled={s.get('header_cells_filled',0)}, "
+                f"truncated={s.get('cells_truncated',0)}, "
+                f"empty_filled={s.get('cells_filled',0)}, "
+                f"empty_rows_skipped={s.get('empty_rows_skipped',0)}, "
+                f"empty_cols_skipped={s.get('empty_cols_skipped',0)}"
+                + (", SKIPPED" if s.get('skipped') else "")
             )
 
     if r.images:

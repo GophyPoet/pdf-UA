@@ -6,3 +6,5 @@ __pycache__/
 /workdir/
 /tests/_e2e_out/
 /tests/fixtures/.~lock.*
+/examples/
+/out_*/
