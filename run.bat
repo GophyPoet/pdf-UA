@@ -65,6 +65,26 @@ if errorlevel 1 (
   exit /b 1
 )
 
+rem Sanity-check the LibreOffice install itself. A corrupt bootstrap.ini
+rem surfaces as a dialog box ("Cannot start, bootstrap.ini is corrupted")
+rem when soffice is launched. Catching it here saves the user from a
+rem confusing crash mid-pipeline.
+if exist "!LOBIN!\bootstrap.ini" (
+  "!LOBIN!\soffice.exe" --headless --version >nul 2>nul
+  if errorlevel 1 (
+    echo [pdf/UA] ERROR: LibreOffice is installed but soffice --version failed.
+    echo           This usually means "bootstrap.ini is corrupted" or the
+    echo           install was interrupted. Reinstall LibreOffice from
+    echo           https://www.libreoffice.org/ and try again.
+    pause
+    exit /b 1
+  )
+) else (
+  echo [pdf/UA] ERROR: bootstrap.ini missing at !LOBIN!\bootstrap.ini — reinstall LibreOffice.
+  pause
+  exit /b 1
+)
+
 where tesseract >nul 2>nul
 if errorlevel 1 (
   echo [pdf/UA] WARNING: tesseract.exe not found in PATH. OCR will be disabled.
