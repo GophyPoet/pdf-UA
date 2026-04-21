@@ -121,7 +121,10 @@ function pickFile(f) {
   fname.textContent = f ? `${f.name} (${(f.size/1024).toFixed(1)} KB)` : 'файл не выбран';
   runBtn.disabled = !f;
 }
-drop.addEventListener('click', () => fileInput.click());
+// NOTE: the drop zone is a <label for="file">, so the browser itself
+// opens the file picker on click. DO NOT also call fileInput.click()
+// here — that would fire the dialog twice on some browsers (Chrome on
+// Windows in particular).
 fileInput.addEventListener('change', (e) => pickFile(e.target.files[0]));
 ['dragenter','dragover'].forEach(ev => drop.addEventListener(ev, e => {
   e.preventDefault(); drop.classList.add('drag');

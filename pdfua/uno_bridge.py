@@ -22,8 +22,6 @@ import tempfile
 import time
 from pathlib import Path
 from typing import Any
-from urllib.parse import quote
-
 import uno  # type: ignore
 from com.sun.star.beans import PropertyValue  # type: ignore
 from com.sun.star.connection import NoConnectException  # type: ignore
@@ -43,7 +41,17 @@ def props(**kwargs: Any) -> tuple:
 
 
 def path_to_url(path: str | Path) -> str:
-    return "file://" + quote(str(Path(path).resolve()))
+    """Convert a filesystem path to a `file://` URL.
+
+    Uses `Path.as_uri()` so Windows paths come out correctly as
+    `file:///C:/path/to/dir` (three slashes, forward slashes, drive
+    letter un-escaped). Our own `quote()`-based version produced
+    `file://C%3A%5C...` which LibreOffice silently rejects for
+    `-env:UserInstallation=...`, causing it to fall back to the
+    system profile — where a corrupt `bootstrap.ini` can surface.
+    """
+    p = Path(path).resolve()
+    return p.as_uri()
 
 
 def _find_free_port() -> int:
