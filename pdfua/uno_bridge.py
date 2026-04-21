@@ -73,9 +73,25 @@ def _find_soffice() -> str:
     launches us via LibreOffice's bundled Python without the Windows
     launcher hasn't necessarily added `C:\\Program Files\\LibreOffice\\program`
     to PATH. Check a few known install locations so we still work.
+
+    On Windows prefer `soffice.exe` over `soffice.com`: the `.com`
+    console stub hangs when the parent process redirects stdout/stderr
+    to files (as we do for diagnostics), and several UNO operations
+    (notably `storeToURL` with `PDFUACompliance=True`) silently block.
     """
-    for name in ("soffice", "libreoffice", "soffice.exe"):
+    def _prefer_exe(hit: str | None) -> str | None:
+        if not hit or os.name != "nt":
+            return hit
+        low = hit.lower()
+        if low.endswith(".com"):
+            exe = hit[: -len(".com")] + ".exe"
+            if os.path.isfile(exe):
+                return exe
+        return hit
+
+    for name in ("soffice.exe", "soffice", "libreoffice"):
         hit = shutil.which(name)
+        hit = _prefer_exe(hit)
         if hit:
             return hit
     if os.name == "nt":
@@ -94,8 +110,11 @@ class UnoBridge:
     """Owns the soffice subprocess and the UNO desktop handle."""
 
     def __init__(self, soffice: str = "soffice") -> None:
-        explicit = shutil.which(soffice)
-        self.soffice_bin = explicit or _find_soffice()
+        # Always route through _find_soffice so Windows .com -> .exe
+        # preference is applied even when the user is on PATH.
+        self.soffice_bin = _find_soffice() if soffice == "soffice" else (
+            shutil.which(soffice) or _find_soffice()
+        )
         self.port = _find_free_port()
         self.profile_dir = Path(tempfile.mkdtemp(prefix="pdfua-profile-"))
         self.proc: subprocess.Popen | None = None
