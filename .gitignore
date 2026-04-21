@@ -1,0 +1,8 @@
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+.venv/
+/workdir/
+/tests/_e2e_out/
+/tests/fixtures/.~lock.*

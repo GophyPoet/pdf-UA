@@ -1,0 +1,248 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>pdf/UA — локальная подготовка документа</title>
+<style>
+  :root { color-scheme: light dark; }
+  * { box-sizing: border-box; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui,
+                 Roboto, "Helvetica Neue", Arial, sans-serif;
+    margin: 0; padding: 24px;
+    background: #f6f6f8; color: #1a1a1e;
+    max-width: 960px; margin: 0 auto;
+  }
+  h1 { font-size: 20px; margin: 0 0 4px; }
+  p.muted { color: #666; margin: 0 0 16px; }
+  .card {
+    background: #fff; border: 1px solid #e1e1e4; border-radius: 8px;
+    padding: 16px; margin-bottom: 16px;
+  }
+  .drop {
+    border: 2px dashed #b9b9bf; border-radius: 8px; padding: 32px;
+    text-align: center; cursor: pointer; background: #fafafa;
+    transition: background .15s, border-color .15s;
+  }
+  .drop.drag { background: #eef5ff; border-color: #3b82f6; }
+  .drop input[type=file] { display: none; }
+  button {
+    font: inherit; padding: 8px 16px; border-radius: 6px; border: 0;
+    background: #3b82f6; color: #fff; cursor: pointer;
+  }
+  button:disabled { background: #9ca3af; cursor: not-allowed; }
+  button.secondary { background: #e5e7eb; color: #111; }
+  .stage { font-weight: 600; }
+  .logs {
+    font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+    font-size: 12px; background: #111; color: #d9d9d9;
+    padding: 12px; border-radius: 6px;
+    max-height: 280px; overflow: auto; white-space: pre-wrap;
+  }
+  .downloads a {
+    display: inline-block; margin: 4px 8px 4px 0;
+    padding: 8px 12px; background: #0f766e; color: #fff;
+    border-radius: 6px; text-decoration: none; font-size: 14px;
+  }
+  .downloads a.warn { background: #b45309; }
+  .pill { display: inline-block; padding: 2px 8px; border-radius: 9999px; font-size: 12px; }
+  .pill.ok { background: #d1fae5; color: #065f46; }
+  .pill.warn { background: #fef3c7; color: #92400e; }
+  .pill.err { background: #fee2e2; color: #991b1b; }
+  table { border-collapse: collapse; width: 100%; font-size: 13px; }
+  th, td { padding: 6px 8px; border-bottom: 1px solid #eee; text-align: left; vertical-align: top; }
+  th { color: #666; font-weight: 500; }
+  .risk { color: #b45309; }
+  @media (prefers-color-scheme: dark) {
+    body { background: #0f1115; color: #e6e6e9; }
+    .card { background: #1a1d23; border-color: #2a2d34; }
+    .drop { background: #1a1d23; border-color: #3a3d46; color: #cfcfd6; }
+    .drop.drag { background: #14304a; border-color: #3b82f6; }
+    p.muted { color: #9ca3af; }
+    th { color: #9ca3af; }
+    th, td { border-bottom-color: #2a2d34; }
+  }
+</style>
+</head>
+<body>
+
+<h1>pdf/UA — локальная подготовка документа</h1>
+<p class="muted">DOC · DOCX · XLS · XLSX · ODT · ODS → редактируемый ODT + PDF/UA + отчёт. Работает локально, без облака.</p>
+
+<div class="card">
+  <label class="drop" id="drop">
+    <input type="file" id="file"
+           accept=".doc,.docx,.xls,.xlsx,.odt,.ods">
+    <div><strong>Перетащите файл сюда</strong> или нажмите, чтобы выбрать</div>
+    <div class="muted" id="file-name">файл не выбран</div>
+  </label>
+  <div style="margin-top:12px; display:flex; gap:8px;">
+    <button id="run" disabled>Обработать</button>
+    <button id="reset" class="secondary">Очистить</button>
+  </div>
+</div>
+
+<div class="card" id="progress-card" hidden>
+  <div><span class="stage" id="stage">—</span>
+       <span class="pill" id="status-pill">pending</span>
+       <span class="muted" id="elapsed"></span></div>
+  <div class="logs" id="logs"></div>
+</div>
+
+<div class="card" id="result-card" hidden>
+  <h3 style="margin-top:0">Результат</h3>
+  <p><strong>Заглавие:</strong> <span id="r-title"></span>
+     <span class="muted" id="r-title-source"></span></p>
+  <p><strong>Итоговый статус:</strong> <span id="r-status" class="pill"></span></p>
+  <div class="downloads" id="r-downloads"></div>
+
+  <h4>Проверка доступности</h4>
+  <table id="r-rules"><thead><tr><th>ID</th><th>Правило</th><th>Статус</th><th>Детали</th></tr></thead><tbody></tbody></table>
+
+  <div id="r-risks-wrap" hidden>
+    <h4>Остаточные риски</h4>
+    <ul id="r-risks"></ul>
+  </div>
+</div>
+
+<script>
+const $ = (id) => document.getElementById(id);
+const drop = $('drop'), fileInput = $('file'), fname = $('file-name');
+const runBtn = $('run'), resetBtn = $('reset');
+const progressCard = $('progress-card'), resultCard = $('result-card');
+const logsEl = $('logs'), stageEl = $('stage');
+const statusPill = $('status-pill'), elapsedEl = $('elapsed');
+
+let selectedFile = null, jobId = null, pollTimer = null;
+
+function pickFile(f) {
+  selectedFile = f;
+  fname.textContent = f ? `${f.name} (${(f.size/1024).toFixed(1)} KB)` : 'файл не выбран';
+  runBtn.disabled = !f;
+}
+drop.addEventListener('click', () => fileInput.click());
+fileInput.addEventListener('change', (e) => pickFile(e.target.files[0]));
+['dragenter','dragover'].forEach(ev => drop.addEventListener(ev, e => {
+  e.preventDefault(); drop.classList.add('drag');
+}));
+['dragleave','drop'].forEach(ev => drop.addEventListener(ev, e => {
+  e.preventDefault(); drop.classList.remove('drag');
+}));
+drop.addEventListener('drop', e => { if (e.dataTransfer.files[0]) pickFile(e.dataTransfer.files[0]); });
+
+resetBtn.addEventListener('click', () => {
+  selectedFile = null; jobId = null;
+  fileInput.value = ''; fname.textContent = 'файл не выбран';
+  runBtn.disabled = true;
+  progressCard.hidden = true; resultCard.hidden = true;
+  logsEl.textContent = '';
+  if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
+});
+
+runBtn.addEventListener('click', async () => {
+  if (!selectedFile) return;
+  runBtn.disabled = true;
+  progressCard.hidden = false;
+  resultCard.hidden = true;
+  logsEl.textContent = '';
+  stageEl.textContent = 'отправка файла…';
+  statusPill.textContent = 'pending'; statusPill.className = 'pill warn';
+
+  const fd = new FormData();
+  fd.append('file', selectedFile);
+  const r = await fetch('/api/jobs', { method: 'POST', body: fd });
+  if (!r.ok) {
+    logsEl.textContent = 'ошибка загрузки: ' + await r.text();
+    runBtn.disabled = false; return;
+  }
+  const j = await r.json();
+  jobId = j.id;
+  pollTimer = setInterval(poll, 800);
+});
+
+async function poll() {
+  if (!jobId) return;
+  const r = await fetch('/api/jobs/' + jobId);
+  if (!r.ok) return;
+  const j = await r.json();
+  logsEl.textContent = (j.logs || []).join('\n');
+  logsEl.scrollTop = logsEl.scrollHeight;
+  elapsedEl.textContent = `· ${j.elapsed}s`;
+  const lastLog = (j.logs && j.logs.length) ? j.logs[j.logs.length - 1] : '';
+  const stageMatch = lastLog.match(/STAGE (\S+)/);
+  if (stageMatch) stageEl.textContent = 'этап: ' + stageMatch[1];
+  if (j.status === 'done') {
+    clearInterval(pollTimer); pollTimer = null;
+    statusPill.textContent = 'готово';
+    statusPill.className = 'pill ok';
+    stageEl.textContent = 'этап: завершено';
+    renderResult(j);
+    runBtn.disabled = false;
+  } else if (j.status === 'error') {
+    clearInterval(pollTimer); pollTimer = null;
+    statusPill.textContent = 'ошибка';
+    statusPill.className = 'pill err';
+    runBtn.disabled = false;
+  } else {
+    statusPill.textContent = j.status;
+    statusPill.className = 'pill warn';
+  }
+}
+
+function renderResult(j) {
+  if (!j.result) return;
+  const res = j.result;
+  $('r-title').textContent = res.title || '(не определено)';
+  $('r-title-source').textContent = ` (источник: ${res.title_source || '—'})`;
+  const statusPill2 = $('r-status');
+  statusPill2.textContent = res.status;
+  statusPill2.className = 'pill ' + ({
+    'fully-fixed':'ok',
+    'fixed-with-warnings':'warn',
+    'best-effort-with-residual-risks':'err'
+  }[res.status] || 'warn');
+
+  const dl = $('r-downloads');
+  dl.innerHTML = '';
+  const files = [
+    ['ODT (редактируемый)', res.downloads.odt],
+    ['PDF/UA', res.downloads.pdf],
+    ['Отчёт JSON', res.downloads.report_json],
+    ['Отчёт TXT', res.downloads.report_txt],
+  ];
+  for (const [label, name] of files) {
+    const a = document.createElement('a');
+    a.textContent = label;
+    a.href = `/api/jobs/${j.id}/download/${encodeURIComponent(name)}`;
+    dl.appendChild(a);
+  }
+
+  const rulesBody = $('r-rules').querySelector('tbody');
+  rulesBody.innerHTML = '';
+  const rules = (res.rules && res.rules.results) || [];
+  for (const r of rules) {
+    const tr = document.createElement('tr');
+    const cls = r.passed ? 'pill ok' : (r.severity === 'error' ? 'pill err' : 'pill warn');
+    tr.innerHTML = `<td>${r.rule_id}</td>
+                    <td>${r.description}</td>
+                    <td><span class="${cls}">${r.passed ? 'OK' : r.severity}</span></td>
+                    <td class="muted">${r.detail || ''}</td>`;
+    rulesBody.appendChild(tr);
+  }
+
+  const risks = res.risks || [];
+  $('r-risks-wrap').hidden = risks.length === 0;
+  const ul = $('r-risks'); ul.innerHTML = '';
+  for (const r of risks) {
+    const li = document.createElement('li');
+    li.className = 'risk';
+    li.textContent = r;
+    ul.appendChild(li);
+  }
+
+  resultCard.hidden = false;
+}
+</script>
+</body>
+</html>
