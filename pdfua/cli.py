@@ -44,6 +44,22 @@ def _cmd_convert(args: argparse.Namespace) -> int:
 def _cmd_serve(args: argparse.Namespace) -> int:
     from .server import create_app  # lazy import
     app = create_app()
+    if args.open:
+        import threading
+        import time
+        import webbrowser
+
+        url = f"http://{args.host if args.host != '0.0.0.0' else '127.0.0.1'}:{args.port}/"
+
+        def _open() -> None:
+            time.sleep(1.0)  # give Flask a moment to bind
+            try:
+                webbrowser.open(url)
+            except Exception:
+                pass
+
+        threading.Thread(target=_open, daemon=True).start()
+        print(f"opening browser at {url}")
     app.run(host=args.host, port=args.port, debug=False)
     return 0
 
@@ -61,6 +77,8 @@ def main(argv: list[str] | None = None) -> int:
     ps = sub.add_parser("serve", help="запустить web-UI")
     ps.add_argument("--host", default="127.0.0.1")
     ps.add_argument("--port", default=8000, type=int)
+    ps.add_argument("--open", action="store_true",
+                    help="автоматически открыть UI в браузере")
     ps.set_defaults(func=_cmd_serve)
 
     args = p.parse_args(argv)
