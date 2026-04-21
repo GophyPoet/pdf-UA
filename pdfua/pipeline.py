@@ -65,7 +65,12 @@ def run(input_path: Path, out_dir: Path, log_cb: Callable[[str], None] | None = 
         started_at=report.now(),
     )
 
+    if log_cb:
+        log_cb(f"STAGE bootstrap-soffice ({input_path.name}, type={kind})")
+
     with UnoBridge() as bridge:
+        if log_cb:
+            log_cb(f"soffice ready at {bridge.soffice_bin}")
         if kind == "text":
             result = _run_text(bridge, input_path, out_dir, rep, log_cb)
         else:

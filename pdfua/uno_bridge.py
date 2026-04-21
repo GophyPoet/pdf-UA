@@ -66,16 +66,48 @@ def _find_free_port() -> int:
     raise RuntimeError("no free port")
 
 
+def _find_soffice() -> str:
+    """Locate the soffice executable.
+
+    `shutil.which` handles $PATH (and %PATH% on Windows), but a user who
+    launches us via LibreOffice's bundled Python without the Windows
+    launcher hasn't necessarily added `C:\\Program Files\\LibreOffice\\program`
+    to PATH. Check a few known install locations so we still work.
+    """
+    for name in ("soffice", "libreoffice", "soffice.exe"):
+        hit = shutil.which(name)
+        if hit:
+            return hit
+    if os.name == "nt":
+        candidates = [
+            r"C:\Program Files\LibreOffice\program\soffice.exe",
+            r"C:\Program Files (x86)\LibreOffice\program\soffice.exe",
+            os.path.expandvars(r"%LOCALAPPDATA%\Programs\LibreOffice\program\soffice.exe"),
+        ]
+        for c in candidates:
+            if os.path.isfile(c):
+                return c
+    return "soffice"
+
+
 class UnoBridge:
     """Owns the soffice subprocess and the UNO desktop handle."""
 
     def __init__(self, soffice: str = "soffice") -> None:
-        self.soffice_bin = shutil.which(soffice) or shutil.which("libreoffice") or soffice
+        explicit = shutil.which(soffice)
+        self.soffice_bin = explicit or _find_soffice()
         self.port = _find_free_port()
         self.profile_dir = Path(tempfile.mkdtemp(prefix="pdfua-profile-"))
         self.proc: subprocess.Popen | None = None
         self.ctx = None
         self.desktop = None
+        # Capture soffice stderr so that a silent crash (corrupt bootstrap.ini,
+        # missing profile, licence dialog, etc.) surfaces in our error message
+        # instead of leaving the pipeline hanging forever.
+        self._stderr_path = self.profile_dir / "soffice.stderr.log"
+        self._stdout_path = self.profile_dir / "soffice.stdout.log"
+        self._stderr_fh = None
+        self._stdout_fh = None
 
     def __enter__(self) -> "UnoBridge":
         self.start()
@@ -100,13 +132,32 @@ class UnoBridge:
             f"-env:UserInstallation={user_url}",
         ]
         log.info("starting soffice on port %d", self.port)
+        log.info("soffice bin: %s", self.soffice_bin)
+        log.info("profile dir: %s", self.profile_dir)
+        self._stdout_fh = open(self._stdout_path, "wb")
+        self._stderr_fh = open(self._stderr_path, "wb")
         self.proc = subprocess.Popen(
             cmd,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
+            stdout=self._stdout_fh,
+            stderr=self._stderr_fh,
             env={**os.environ, "HOME": str(self.profile_dir)},
         )
         self._connect()
+
+    def _read_soffice_log_tail(self, limit: int = 4000) -> str:
+        parts: list[str] = []
+        for label, path in (("stderr", self._stderr_path), ("stdout", self._stdout_path)):
+            try:
+                data = path.read_bytes()
+            except Exception:
+                continue
+            if not data:
+                continue
+            text = data.decode("utf-8", errors="replace")
+            if len(text) > limit:
+                text = "…" + text[-limit:]
+            parts.append(f"--- soffice {label} ---\n{text.rstrip()}")
+        return "\n\n".join(parts) if parts else "(no soffice output captured)"
 
     def _connect(self, timeout: float = 45.0) -> None:
         local_ctx = uno.getComponentContext()
@@ -121,7 +172,11 @@ class UnoBridge:
         last_err: Exception | None = None
         while time.time() < deadline:
             if self.proc and self.proc.poll() is not None:
-                raise RuntimeError(f"soffice died early rc={self.proc.returncode}")
+                tail = self._read_soffice_log_tail()
+                raise RuntimeError(
+                    f"soffice exited early (rc={self.proc.returncode}) "
+                    f"before accepting UNO connections.\n{tail}"
+                )
             try:
                 self.ctx = resolver.resolve(conn_str)
                 break
@@ -132,7 +187,11 @@ class UnoBridge:
                 last_err = e
                 time.sleep(0.25)
         if self.ctx is None:
-            raise RuntimeError(f"could not connect to soffice: {last_err}")
+            tail = self._read_soffice_log_tail()
+            raise RuntimeError(
+                f"could not connect to soffice within {timeout:.0f}s "
+                f"(last error: {last_err}).\n{tail}"
+            )
         smgr = self.ctx.ServiceManager
         self.desktop = smgr.createInstanceWithContext(
             "com.sun.star.frame.Desktop", self.ctx
@@ -153,6 +212,12 @@ class UnoBridge:
                 except subprocess.TimeoutExpired:
                     self.proc.kill()
                     self.proc.wait(timeout=5)
+            for fh in (self._stdout_fh, self._stderr_fh):
+                try:
+                    if fh is not None:
+                        fh.close()
+                except Exception:
+                    pass
             shutil.rmtree(self.profile_dir, ignore_errors=True)
 
     def load(self, path: str | Path, hidden: bool = True, **filter_props: Any):
